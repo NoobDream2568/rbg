@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -72,6 +73,11 @@ type RoleInstances struct {
 type Instance struct {
 	Address string           `json:"address"`
 	Ports   map[string]int32 `json:"ports,omitempty"` // Key: port name, Value: port number
+	// Components holds component-level FQDN addresses for CustomComponentsPattern.
+	// Key format: "{componentName}-{index}", Value: "{podName}.{serviceName}"
+	// Empty for StandalonePattern and LeaderWorkerPattern roles.
+	// +optional
+	Components map[string]string `json:"components,omitempty"`
 }
 
 func (b *ConfigBuilder) Build() ([]byte, error) {
@@ -121,10 +127,56 @@ func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha2.RoleSpec) ([]Inst
 		return nil, fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
 	}
 
+	ccp := role.GetCustomComponentsPattern()
+	lwp := role.GetLeaderWorkerPattern()
+	workloadName := b.rbg.GetWorkloadName(role)
+
 	for i := 0; i < int(*role.Replicas); i++ {
 		instance := Instance{
-			Address: fmt.Sprintf("%s-%d.%s", b.rbg.GetWorkloadName(role), i, serviceName),
+			Address: fmt.Sprintf("%s-%d.%s", workloadName, i, serviceName),
 			Ports:   make(map[string]int32),
+		}
+
+		switch {
+		case ccp != nil:
+			// For CustomComponentsPattern, pod naming (ComponentsTemplateType):
+			//   {workloadName}-{ordinal}-{componentName}-{id}
+			// FQDN: {podName}.{serviceName}
+			instance.Components = make(map[string]string)
+			for _, comp := range ccp.Components {
+				for j := int32(0); j < *comp.Size; j++ {
+					key := fmt.Sprintf("%s-%d", comp.Name, j)
+					instance.Components[key] = fmt.Sprintf(
+						"%s-%d-%s-%d.%s",
+						workloadName, i, comp.Name, j, serviceName,
+					)
+				}
+			}
+		case lwp != nil:
+			// For LeaderWorkerPattern, pod naming depends on the backing workload:
+			//   - LeaderWorkerSet: leader of group i = {workloadName}-{i*size},
+			//     workers follow with consecutive indices
+			//   - RoleInstanceSet: leader = {workloadName}-{ordinal}-0,
+			//     worker j = {workloadName}-{ordinal}-{j+1}
+			size := int32(1)
+			if lwp.Size != nil {
+				size = *lwp.Size
+			}
+			instance.Components = make(map[string]string)
+			if role.GetWorkloadType() == constants.LeaderWorkerSetWorkloadType {
+				groupStart := int32(i) * size
+				instance.Components["leader-0"] = fmt.Sprintf("%s-%d.%s", workloadName, groupStart, serviceName)
+				for j := int32(0); j < size-1; j++ {
+					key := fmt.Sprintf("worker-%d", j)
+					instance.Components[key] = fmt.Sprintf("%s-%d.%s", workloadName, groupStart+j+1, serviceName)
+				}
+			} else {
+				instance.Components["leader-0"] = fmt.Sprintf("%s-%d-0.%s", workloadName, i, serviceName)
+				for j := int32(0); j < size-1; j++ {
+					key := fmt.Sprintf("worker-%d", j)
+					instance.Components[key] = fmt.Sprintf("%s-%d-%d.%s", workloadName, i, j+1, serviceName)
+				}
+			}
 		}
 
 		for _, port := range role.ServicePorts {
