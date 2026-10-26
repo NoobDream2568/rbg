@@ -469,6 +469,17 @@ func TestRBGScalingAdapterPredicate(t *testing.T) {
 	}
 	assert.False(t, predicate.UpdateFunc(updateEvent2))
 
+	adopted := oldAdapter.DeepCopy()
+	adopted.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: workloadsv1alpha2.GroupVersion.String(), Kind: "RoleBasedGroup", Name: "rbg1", UID: "new-parent",
+	}}
+	assert.True(t, predicate.UpdateFunc(event.UpdateEvent{ObjectOld: oldAdapter, ObjectNew: adopted}))
+	assert.True(t, predicate.UpdateFunc(event.UpdateEvent{ObjectOld: adopted, ObjectNew: oldAdapter}))
+
+	statusOnly := adopted.DeepCopy()
+	statusOnly.Status.Phase = constants.AdapterPhaseBound
+	assert.False(t, predicate.UpdateFunc(event.UpdateEvent{ObjectOld: adopted, ObjectNew: statusOnly}))
+
 	// Test DeleteFunc
 	deleteEvent := event.DeleteEvent{
 		Object: &workloadsv1alpha2.RoleBasedGroupScalingAdapter{

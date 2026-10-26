@@ -30,14 +30,15 @@ import (
 )
 
 type DefaultDependencyManager struct {
-	scheme *runtime.Scheme
-	client client.Client
+	scheme    *runtime.Scheme
+	client    client.Client
+	apiReader client.Reader
 }
 
 var _ DependencyManager = &DefaultDependencyManager{}
 
-func NewDefaultDependencyManager(scheme *runtime.Scheme, client client.Client) *DefaultDependencyManager {
-	return &DefaultDependencyManager{scheme: scheme, client: client}
+func NewDefaultDependencyManager(scheme *runtime.Scheme, c client.Client, apiReader client.Reader) *DefaultDependencyManager {
+	return &DefaultDependencyManager{scheme: scheme, client: c, apiReader: apiReader}
 }
 
 func (m *DefaultDependencyManager) SortRoles(
@@ -100,7 +101,7 @@ func (m *DefaultDependencyManager) CheckDependencyReady(
 		if err != nil {
 			return false, err
 		}
-		r, err := reconciler.NewWorkloadReconciler(depRole.GetWorkloadSpec(), m.scheme, m.client)
+		r, err := reconciler.NewWorkloadReconciler(depRole.GetWorkloadSpec(), m.scheme, m.client, m.apiReader)
 		if err != nil {
 			return false, err
 		}

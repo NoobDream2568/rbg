@@ -52,17 +52,17 @@ type GangSchedulerSetter interface {
 }
 
 func NewWorkloadReconciler(
-	workload workloadsv1alpha2.WorkloadSpec, scheme *runtime.Scheme, client client.Client,
+	workload workloadsv1alpha2.WorkloadSpec, scheme *runtime.Scheme, c client.Client, apiReader client.Reader,
 ) (WorkloadReconciler, error) {
 	switch {
 	case workload.String() == constants.DeploymentWorkloadType:
-		return NewDeploymentReconciler(scheme, client), nil
+		return NewDeploymentReconciler(scheme, c, apiReader), nil
 	case workload.String() == constants.StatefulSetWorkloadType:
-		return NewStatefulSetReconciler(scheme, client), nil
+		return NewStatefulSetReconciler(scheme, c, apiReader), nil
 	case workload.String() == constants.LeaderWorkerSetWorkloadType:
-		return NewLeaderWorkerSetReconciler(scheme, client), nil
+		return NewLeaderWorkerSetReconciler(scheme, c, apiReader), nil
 	case workload.String() == constants.RoleInstanceSetWorkloadType:
-		return NewRoleInstanceSetReconciler(scheme, client), nil
+		return NewRoleInstanceSetReconciler(scheme, c, apiReader), nil
 	default:
 		return nil, fmt.Errorf("unsupported workload type: %s", workload.String())
 	}

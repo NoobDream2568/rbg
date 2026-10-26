@@ -30,6 +30,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/scheduler/common"
 	schedv1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
@@ -135,7 +136,7 @@ func TestCreateOrUpdateMinMemberCoversScopedRolesOnly(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	require.NoError(t, New(c, "").createOrUpdate(
-		context.Background(), rbg, &common.GangStrategy{Roles: sets.New("prefill")}))
+		context.Background(), rbg, &common.GangStrategy{Roles: sets.New("prefill")}, c))
 
 	podGroup := &schedv1alpha1.PodGroup{}
 	require.NoError(t, c.Get(
@@ -172,7 +173,7 @@ func TestCreateOrUpdate_ForeignPodGroupRejected(t *testing.T) {
 			}
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg).Build()
 
-			err := New(c, "").createOrUpdate(context.Background(), rbg, &common.GangStrategy{})
+			err := New(c, "").createOrUpdate(context.Background(), rbg, &common.GangStrategy{}, c)
 			assert.Error(t, err, "should reject PodGroup owned by a different UID")
 
 			after := &schedv1alpha1.PodGroup{}
@@ -197,9 +198,10 @@ func TestCreateOrUpdate_OrphanPodGroupAdopted(t *testing.T) {
 		},
 		Spec: schedv1alpha1.PodGroupSpec{MinMember: 1},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg, rbg).Build()
+	apiReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rbg).Build()
 
-	err := New(c, "").createOrUpdate(context.Background(), rbg, &common.GangStrategy{})
+	err := New(c, "").createOrUpdate(context.Background(), rbg, &common.GangStrategy{}, apiReader)
 	require.NoError(t, err)
 
 	after := &schedv1alpha1.PodGroup{}
@@ -218,24 +220,29 @@ func TestCreateOrUpdate_SameSpecOrphanPodGroupAdopted(t *testing.T) {
 	rbg := testRBG()
 	rbg.UID = "new-rbg-uid"
 
+	otherRef := metav1.OwnerReference{APIVersion: "v1", Kind: "ConfigMap", Name: "other", UID: "other-uid"}
 	pg := &schedv1alpha1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      rbg.Name,
-			Namespace: rbg.Namespace,
+			Name:            rbg.Name,
+			Namespace:       rbg.Namespace,
+			OwnerReferences: []metav1.OwnerReference{otherRef},
 		},
 		Spec: schedv1alpha1.PodGroupSpec{
 			MinMember:              2,
 			ScheduleTimeoutSeconds: ptr.To(defaultScheduleTimeoutSeconds),
 		},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg, rbg).Build()
+	apiReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rbg).Build()
 
-	err := New(c, "").createOrUpdate(context.Background(), rbg, &common.GangStrategy{})
+	err := New(c, "").createOrUpdate(context.Background(), rbg, &common.GangStrategy{}, apiReader)
 	require.NoError(t, err)
 
 	after := &schedv1alpha1.PodGroup{}
 	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pg), after))
 	assert.True(t, metav1.IsControlledBy(after, rbg), "same-spec orphan PodGroup should still be adopted")
+	assert.Contains(t, after.OwnerReferences, otherRef)
+	assert.Equal(t, pg.Spec, after.Spec)
 }
 
 func TestCreateOrUpdate_OwnPodGroupUpdated(t *testing.T) {
@@ -254,14 +261,76 @@ func TestCreateOrUpdate_OwnPodGroupUpdated(t *testing.T) {
 		},
 		Spec: schedv1alpha1.PodGroupSpec{MinMember: 1},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg, rbg).Build()
+	reads := 0
+	apiReader := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			reads++
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	}).Build()
 
-	err := New(c, "").createOrUpdate(context.Background(), rbg, &common.GangStrategy{})
-	require.NoError(t, err)
+	for range 2 {
+		require.NoError(t, New(c, "").createOrUpdate(context.Background(), rbg, &common.GangStrategy{}, apiReader))
+	}
+	assert.Zero(t, reads, "owned PodGroups do not require a live parent read")
 
 	after := &schedv1alpha1.PodGroup{}
 	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pg), after))
 	assert.Equal(t, int32(2), after.Spec.MinMember, "own PodGroup should be updated")
+}
+
+func TestReconcilePodGroup_AdoptionRequiresLiveParent(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, schedv1alpha1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+
+	for _, state := range []string{"missing", "terminating", "replaced UID"} {
+		for _, spec := range []struct {
+			name      string
+			minMember int32
+		}{{"same spec", 2}, {"different spec", 1}} {
+			t.Run(state+"/"+spec.name, func(t *testing.T) {
+				rbg := testRBG()
+				rbg.UID = "rbg-uid"
+				pg := &schedv1alpha1.PodGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: rbg.Name, Namespace: rbg.Namespace,
+						OwnerReferences: []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "other", UID: "other-uid"}},
+					},
+					Spec: schedv1alpha1.PodGroupSpec{MinMember: spec.minMember, ScheduleTimeoutSeconds: ptr.To(defaultScheduleTimeoutSeconds)},
+				}
+				c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rbg, pg).Build()
+				before := &schedv1alpha1.PodGroup{}
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pg), before))
+
+				live := rbg.DeepCopy()
+				liveObjects := []client.Object{}
+				switch state {
+				case "terminating":
+					live.DeletionTimestamp = ptr.To(metav1.Now())
+					live.Finalizers = []string{"test/hold"}
+					liveObjects = append(liveObjects, live)
+				case "replaced UID":
+					live.UID = "replacement-uid"
+					liveObjects = append(liveObjects, live)
+				}
+				apiReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(liveObjects...).Build()
+				watched := &sync.Map{}
+				watched.Store(CrdName, struct{}{})
+				m := New(c, "")
+
+				require.Error(t, m.ReconcilePodGroup(ctx, rbg, &common.GangStrategy{}, nil, watched, apiReader))
+				after := &schedv1alpha1.PodGroup{}
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pg), after))
+				assert.Equal(t, before, after, "rejected orphan must remain unchanged")
+				require.NoError(t, m.ReconcilePodGroup(ctx, rbg, nil, nil, watched, apiReader))
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pg), after))
+				assert.Equal(t, before, after, "rejected orphan must not be deleted when gang scheduling is disabled")
+			})
+		}
+	}
 }
 
 // TestReconcilePodGroupRejectsPerRoleMinimums pins the runtime safety net: the webhook

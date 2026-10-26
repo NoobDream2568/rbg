@@ -46,13 +46,14 @@ import (
 type LeaderWorkerSetReconciler struct {
 	scheme        *runtime.Scheme
 	client        client.Client
+	apiReader     client.Reader
 	gangScheduler scheduler.GangScheduler
 }
 
 var _ WorkloadReconciler = &LeaderWorkerSetReconciler{}
 
-func NewLeaderWorkerSetReconciler(scheme *runtime.Scheme, client client.Client) *LeaderWorkerSetReconciler {
-	return &LeaderWorkerSetReconciler{scheme: scheme, client: client}
+func NewLeaderWorkerSetReconciler(scheme *runtime.Scheme, c client.Client, apiReader client.Reader) *LeaderWorkerSetReconciler {
+	return &LeaderWorkerSetReconciler{scheme: scheme, client: c, apiReader: apiReader}
 }
 
 // SetGangScheduler implements GangSchedulerSetter.
@@ -98,6 +99,11 @@ func (r *LeaderWorkerSetReconciler) Reconciler(
 	if err == nil {
 		if err := checkWorkloadClaimable(oldLWS, rbg); err != nil {
 			return err
+		}
+		if metav1.GetControllerOfNoCopy(oldLWS) == nil {
+			if err := utils.CanAdopt(ctx, r.apiReader, rbg); err != nil {
+				return err
+			}
 		}
 	}
 

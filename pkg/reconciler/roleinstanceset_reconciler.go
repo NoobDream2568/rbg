@@ -23,6 +23,7 @@ import (
 	"strconv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -43,15 +44,17 @@ import (
 type RoleInstanceSetReconciler struct {
 	scheme        *runtime.Scheme
 	client        client.Client
+	apiReader     client.Reader
 	gangScheduler scheduler.GangScheduler
 }
 
 var _ WorkloadReconciler = &RoleInstanceSetReconciler{}
 
-func NewRoleInstanceSetReconciler(scheme *runtime.Scheme, client client.Client) *RoleInstanceSetReconciler {
+func NewRoleInstanceSetReconciler(scheme *runtime.Scheme, c client.Client, apiReader client.Reader) *RoleInstanceSetReconciler {
 	return &RoleInstanceSetReconciler{
-		scheme: scheme,
-		client: client,
+		scheme:    scheme,
+		client:    c,
+		apiReader: apiReader,
 	}
 }
 
@@ -101,6 +104,11 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 	if err == nil {
 		if err := checkWorkloadClaimable(oldRoleInstanceSet, rbg); err != nil {
 			return err
+		}
+		if metav1.GetControllerOfNoCopy(oldRoleInstanceSet) == nil {
+			if err := utils.CanAdopt(ctx, r.apiReader, rbg); err != nil {
+				return err
+			}
 		}
 	}
 

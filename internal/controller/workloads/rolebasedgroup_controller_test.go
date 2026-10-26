@@ -868,6 +868,9 @@ func TestRoleBasedGroupReconciler_ReconcileScalingAdapter(t *testing.T) {
 						Name:      scale.GenerateScalingAdapterName(rbg.Name, roleSpec.Name),
 						Namespace: rbg.Namespace,
 					},
+					Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+						ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{Name: rbg.Name, Role: roleSpec.Name},
+					},
 				},
 			},
 			wantErr:      false,
@@ -1190,7 +1193,8 @@ func TestRoleBasedGroupReconciler_applyRBGSAReplicasOverride(t *testing.T) {
 				}},
 			},
 			Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
-				Replicas: replicas,
+				Replicas:       replicas,
+				ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{Name: rbgName, Role: roleName},
 			},
 			Status: workloadsv1alpha2.RoleBasedGroupScalingAdapterStatus{
 				Phase: phase,

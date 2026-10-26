@@ -440,7 +440,7 @@ func RBGScalingAdapterPredicate() predicate.Funcs {
 			oldRbg, ok1 := e.ObjectOld.(*workloadsv1alpha2.RoleBasedGroupScalingAdapter)
 			newRbg, ok2 := e.ObjectNew.(*workloadsv1alpha2.RoleBasedGroupScalingAdapter)
 			if ok1 && ok2 {
-				if !reflect.DeepEqual(oldRbg.Spec, newRbg.Spec) {
+				if !reflect.DeepEqual(oldRbg.Spec, newRbg.Spec) || !reflect.DeepEqual(oldRbg.OwnerReferences, newRbg.OwnerReferences) {
 					ctrl.Log.Info("enqueue: rbg scalingAdapter update event", "rbg", klog.KObj(e.ObjectOld))
 					return true
 				}

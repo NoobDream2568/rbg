@@ -86,7 +86,7 @@ func TestNewWorkloadReconciler(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
-				reconciler, err := NewWorkloadReconciler(tt.workloadType, scheme, fakeClient)
+				reconciler, err := NewWorkloadReconciler(tt.workloadType, scheme, fakeClient, fakeClient)
 
 				if tt.expectError {
 					if err == nil {
@@ -494,15 +494,15 @@ func TestWorkloadReconcilerInterface(t *testing.T) {
 	}{
 		{
 			name:       "DeploymentReconciler",
-			reconciler: NewDeploymentReconciler(testScheme, fakeClient),
+			reconciler: NewDeploymentReconciler(testScheme, fakeClient, fakeClient),
 		},
 		{
 			name:       "StatefulSetReconciler",
-			reconciler: NewStatefulSetReconciler(testScheme, fakeClient),
+			reconciler: NewStatefulSetReconciler(testScheme, fakeClient, fakeClient),
 		},
 		{
 			name:       "LeaderWorkerSetReconciler",
-			reconciler: NewLeaderWorkerSetReconciler(testScheme, fakeClient),
+			reconciler: NewLeaderWorkerSetReconciler(testScheme, fakeClient, fakeClient),
 		},
 	}
 

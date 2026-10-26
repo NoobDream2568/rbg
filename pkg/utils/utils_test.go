@@ -17,12 +17,100 @@ limitations under the License.
 package utils
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
+
+func TestCanAdopt(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	readFailure := errors.New("live read failed")
+	now := metav1.Now()
+
+	for _, tc := range []struct {
+		name           string
+		missing        bool
+		replaced       bool
+		terminating    bool
+		cachedDeleting bool
+		readError      error
+		wantError      string
+	}{
+		{name: "live same UID"},
+		{name: "deleted", missing: true, wantError: "get live parent"},
+		{name: "replaced UID", replaced: true, wantError: "parent UID changed"},
+		{name: "terminating", terminating: true, wantError: "parent is deleting"},
+		{name: "cached parent terminating", cachedDeleting: true, wantError: "parent is deleting"},
+		{name: "read failure", readError: readFailure, wantError: "get live parent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "parent", Namespace: "default", UID: "original-uid"},
+			}
+			live := parent.DeepCopy()
+			live.Labels = map[string]string{"live": "true"}
+			if tc.replaced {
+				live.UID = "replacement-uid"
+			}
+			if tc.terminating {
+				live.DeletionTimestamp = &now
+				live.Finalizers = []string{"test.finalizer/rbg"}
+			}
+			if tc.cachedDeleting {
+				parent.DeletionTimestamp = &now
+			}
+			original := parent.DeepCopy()
+			reads := 0
+			var getError error
+			builder := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					reads++
+					assert.Equal(t, client.ObjectKeyFromObject(parent), key)
+					assert.IsType(t, parent, obj)
+					assert.NotSame(t, parent, obj)
+					getError = tc.readError
+					if getError == nil {
+						getError = c.Get(ctx, key, obj, opts...)
+					}
+					return getError
+				},
+			})
+			if !tc.missing {
+				builder.WithObjects(live)
+			}
+
+			err := CanAdopt(context.Background(), builder.Build(), parent)
+			if tc.wantError == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tc.wantError)
+				assert.Contains(t, err.Error(), "default/parent")
+				assert.Contains(t, err.Error(), "RoleBasedGroup")
+			}
+			if getError != nil {
+				assert.ErrorIs(t, err, getError)
+			}
+			if tc.missing {
+				assert.True(t, apierrors.IsNotFound(err))
+			}
+			assert.Equal(t, 1, reads)
+			assert.Equal(t, original, parent)
+		})
+	}
+}
 
 func TestContainsString(t *testing.T) {
 	tests := []struct {

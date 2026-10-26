@@ -120,6 +120,9 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		if metav1.GetControllerOfNoCopy(rbg) == nil {
 			// Adopt the orphan (e.g. left behind by a cascade=orphan deletion) so
 			// that it is garbage-collected together with the Set.
+			if err := utils.CanAdopt(ctx, r.apiReader, rbgset); err != nil {
+				return ctrl.Result{}, err
+			}
 			if err := controllerutil.SetControllerReference(rbgset, rbg, r.scheme); err != nil {
 				return ctrl.Result{}, err
 			}

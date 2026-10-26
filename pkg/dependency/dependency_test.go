@@ -125,7 +125,7 @@ func TestDefaultDependencyManager_SortRoles_EmptyRoles(t *testing.T) {
 	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	client := fake.NewClientBuilder().Build()
-	manager := NewDefaultDependencyManager(scheme, client)
+	manager := NewDefaultDependencyManager(scheme, client, client)
 
 	tests := []struct {
 		name     string
@@ -329,7 +329,7 @@ func TestDefaultDependencyManager_CheckDependencyReady(t *testing.T) {
 		t.Run(
 			tt.name, func(t *testing.T) {
 				client := fake.NewClientBuilder().WithObjects(tt.sts).Build()
-				dependencyManager := NewDefaultDependencyManager(scheme, client)
+				dependencyManager := NewDefaultDependencyManager(scheme, client, client)
 
 				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))
 				ready, err := dependencyManager.CheckDependencyReady(ctx, rbg, &rbg.Spec.Roles[0])

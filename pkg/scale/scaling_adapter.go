@@ -17,6 +17,7 @@ limitations under the License.
 package scale
 
 import (
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -33,6 +34,24 @@ func IsScalingAdapterManagedByRBG(
 	}
 
 	return scalingAdapter.ContainsRBGOwner(rbg)
+}
+
+func ScalingAdapterTargetsRole(adapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter, rbg *workloadsv1alpha2.RoleBasedGroup, roleName string) bool {
+	ref := adapter.Spec.ScaleTargetRef
+	return ref != nil && ref.Name == rbg.Name && ref.Role == roleName
+}
+
+func IsScalingAdapterAdoptable(adapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter, rbg *workloadsv1alpha2.RoleBasedGroup, roleName string) bool {
+	if !ScalingAdapterTargetsRole(adapter, rbg, roleName) {
+		return false
+	}
+	for _, owner := range adapter.OwnerReferences {
+		gvk := schema.FromAPIVersionAndKind(owner.APIVersion, owner.Kind)
+		if gvk.Group == workloadsv1alpha2.GroupVersion.Group && gvk.Kind == "RoleBasedGroup" {
+			return false
+		}
+	}
+	return true
 }
 
 func IsScalingAdapterEnable(roleSpec *workloadsv1alpha2.RoleSpec) bool {

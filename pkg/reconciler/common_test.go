@@ -18,6 +18,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -33,6 +34,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -212,7 +214,7 @@ type claimTestWorkload struct {
 	role       workloadsv1alpha2.RoleSpec
 	object     func(meta metav1.ObjectMeta) client.Object
 	empty      func() client.Object
-	reconciler func(s *runtime.Scheme, c client.Client) WorkloadReconciler
+	reconciler func(s *runtime.Scheme, c client.Client, apiReader client.Reader) WorkloadReconciler
 	// equalOrphan builds the workload exactly as the reconciler's apply would persist it, except
 	// with a UID and no controller reference: the shape left by kubectl delete --cascade=orphan
 	// followed by a re-apply of the same manifest. Nil for kinds whose reconcile always patches.
@@ -247,8 +249,8 @@ func claimTestWorkloads() []claimTestWorkload {
 				}
 			},
 			empty: func() client.Object { return &workloadsv1alpha2.RoleInstanceSet{} },
-			reconciler: func(s *runtime.Scheme, c client.Client) WorkloadReconciler {
-				return NewRoleInstanceSetReconciler(s, c)
+			reconciler: func(s *runtime.Scheme, c client.Client, apiReader client.Reader) WorkloadReconciler {
+				return NewRoleInstanceSetReconciler(s, c, apiReader)
 			},
 		},
 		{
@@ -264,12 +266,12 @@ func claimTestWorkloads() []claimTestWorkload {
 				}
 			},
 			empty: func() client.Object { return &appsv1.Deployment{} },
-			reconciler: func(s *runtime.Scheme, c client.Client) WorkloadReconciler {
-				return NewDeploymentReconciler(s, c)
+			reconciler: func(s *runtime.Scheme, c client.Client, apiReader client.Reader) WorkloadReconciler {
+				return NewDeploymentReconciler(s, c, apiReader)
 			},
 			equalOrphan: func(t *testing.T, s *runtime.Scheme, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec) client.Object {
 				c := fake.NewClientBuilder().WithScheme(s).Build()
-				cfg, err := NewDeploymentReconciler(s, c).constructDeployApplyConfiguration(
+				cfg, err := NewDeploymentReconciler(s, c, c).constructDeployApplyConfiguration(
 					context.Background(), rbg, role, &appsv1.Deployment{}, nil, expectedRevisionHash)
 				require.NoError(t, err)
 				return claimTestAppliedObject(t, cfg, &appsv1.Deployment{})
@@ -288,12 +290,12 @@ func claimTestWorkloads() []claimTestWorkload {
 				}
 			},
 			empty: func() client.Object { return &appsv1.StatefulSet{} },
-			reconciler: func(s *runtime.Scheme, c client.Client) WorkloadReconciler {
-				return NewStatefulSetReconciler(s, c)
+			reconciler: func(s *runtime.Scheme, c client.Client, apiReader client.Reader) WorkloadReconciler {
+				return NewStatefulSetReconciler(s, c, apiReader)
 			},
 			equalOrphan: func(t *testing.T, s *runtime.Scheme, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec) client.Object {
 				c := fake.NewClientBuilder().WithScheme(s).Build()
-				cfg, err := NewStatefulSetReconciler(s, c).constructStatefulSetApplyConfiguration(
+				cfg, err := NewStatefulSetReconciler(s, c, c).constructStatefulSetApplyConfiguration(
 					context.Background(), rbg, role, &appsv1.StatefulSet{}, expectedRevisionHash)
 				require.NoError(t, err)
 				sts := claimTestAppliedObject(t, cfg, &appsv1.StatefulSet{})
@@ -307,7 +309,7 @@ func claimTestWorkloads() []claimTestWorkload {
 		},
 		{
 			kind: "LeaderWorkerSet",
-			role: wrappersv2.BuildLeaderWorkerRole("worker").Obj(),
+			role: wrappersv2.BuildLeaderWorkerRole("worker").WithWorkload("leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet").Obj(),
 			object: func(meta metav1.ObjectMeta) client.Object {
 				return &lwsv1.LeaderWorkerSet{
 					ObjectMeta: meta,
@@ -316,12 +318,12 @@ func claimTestWorkloads() []claimTestWorkload {
 				}
 			},
 			empty: func() client.Object { return &lwsv1.LeaderWorkerSet{} },
-			reconciler: func(s *runtime.Scheme, c client.Client) WorkloadReconciler {
-				return NewLeaderWorkerSetReconciler(s, c)
+			reconciler: func(s *runtime.Scheme, c client.Client, apiReader client.Reader) WorkloadReconciler {
+				return NewLeaderWorkerSetReconciler(s, c, apiReader)
 			},
 			equalOrphan: func(t *testing.T, s *runtime.Scheme, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec) client.Object {
 				c := fake.NewClientBuilder().WithScheme(s).Build()
-				cfg, err := NewLeaderWorkerSetReconciler(s, c).constructLWSApplyConfiguration(
+				cfg, err := NewLeaderWorkerSetReconciler(s, c, c).constructLWSApplyConfiguration(
 					context.Background(), rbg, role, nil, expectedRevisionHash)
 				require.NoError(t, err)
 				return claimTestAppliedObject(t, cfg, &lwsv1.LeaderWorkerSet{})
@@ -396,7 +398,7 @@ func TestWorkloadReconcilers_DoNotClaimWorkloadTheyDoNotControl(t *testing.T) {
 					OwnerReferences: tc.owners(rbg),
 				}
 				c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(wl.object(meta)).Build()
-				rec := wl.reconciler(scheme, c)
+				rec := wl.reconciler(scheme, c, c)
 
 				status, err := rec.ConstructRoleStatus(ctx, rbg, &role)
 				require.NoError(t, err)
@@ -438,8 +440,8 @@ func TestWorkloadReconcilers_AdoptOrphanedWorkloadCarryingGroupLabel(t *testing.
 				Generation: 1,
 				Labels:     map[string]string{constants.GroupNameLabelKey: rbg.Name},
 			}
-			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(wl.object(meta)).Build()
-			rec := wl.reconciler(scheme, c)
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rbg, wl.object(meta)).Build()
+			rec := wl.reconciler(scheme, c, c)
 
 			status, err := rec.ConstructRoleStatus(ctx, rbg, &role)
 			require.NoError(t, err)
@@ -457,6 +459,121 @@ func TestWorkloadReconcilers_AdoptOrphanedWorkloadCarryingGroupLabel(t *testing.
 			require.NotNil(t, controller, "the orphaned workload must be adopted")
 			assert.Equal(t, claimTestCurrentUID, controller.UID)
 		})
+	}
+}
+
+func TestWorkloadReconcilers_AdoptionRequiresLiveParent(t *testing.T) {
+	scheme := claimTestScheme(t)
+	readFailure := errors.New("API reader unavailable")
+	for _, wl := range claimTestWorkloads() {
+		for _, tc := range []struct {
+			name           string
+			liveState      string
+			cachedDeleting bool
+			ownerUID       types.UID
+			wantError      string
+			wantReads      int
+		}{
+			{name: "valid adoption", wantReads: 1},
+			{name: "parent missing", liveState: "missing", wantError: "get live parent", wantReads: 1},
+			{name: "parent replaced", liveState: "replaced", wantError: "parent UID changed", wantReads: 1},
+			{name: "parent deleting", liveState: "deleting", wantError: "parent is deleting", wantReads: 1},
+			{name: "cached parent deleting", cachedDeleting: true, wantError: "parent is deleting", wantReads: 1},
+			{name: "reader failure", liveState: "read failure", wantError: "get live parent", wantReads: 1},
+			{name: "owned workload skips live read", liveState: "missing", ownerUID: claimTestCurrentUID},
+			{name: "foreign owner skips live read", liveState: "missing", ownerUID: claimTestPreviousUID, wantError: "workload is not claimable"},
+		} {
+			t.Run(wl.kind+"/"+tc.name, func(t *testing.T) {
+				ctx := context.Background()
+				role := wl.role
+				rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+					WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+				rbg.UID = claimTestCurrentUID
+				liveParent := rbg.DeepCopy()
+				now := metav1.Now()
+				if tc.cachedDeleting {
+					rbg.DeletionTimestamp = &now
+					rbg.Finalizers = []string{"test.finalizer/rbg"}
+				}
+				switch tc.liveState {
+				case "replaced":
+					liveParent.UID = "replacement-rbg-uid"
+				case "deleting":
+					liveParent.DeletionTimestamp = &now
+					liveParent.Finalizers = []string{"test.finalizer/rbg"}
+				}
+				reads := 0
+				readerBuilder := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						reads++
+						assert.Equal(t, client.ObjectKeyFromObject(rbg), key)
+						assert.IsType(t, rbg, obj)
+						if tc.liveState == "read failure" {
+							return readFailure
+						}
+						return c.Get(ctx, key, obj, opts...)
+					},
+				})
+				if tc.liveState != "missing" {
+					readerBuilder.WithObjects(liveParent)
+				}
+				meta := metav1.ObjectMeta{
+					Name:       rbg.GetWorkloadName(&role),
+					Namespace:  rbg.Namespace,
+					Generation: 1,
+					Labels:     map[string]string{constants.GroupNameLabelKey: rbg.Name},
+				}
+				if tc.ownerUID != "" {
+					meta.OwnerReferences = []metav1.OwnerReference{claimTestControllerRef(rbg, tc.ownerUID)}
+				}
+				workload := wl.object(meta)
+				patches := 0
+				c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rbg, workload).
+					WithInterceptorFuncs(interceptor.Funcs{
+						Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+							patches++
+							return c.Patch(ctx, obj, patch, opts...)
+						},
+					}).Build()
+				cachedParent := &workloadsv1alpha2.RoleBasedGroup{}
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(rbg), cachedParent))
+				before := wl.empty()
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(workload), before))
+				rec, err := NewWorkloadReconciler(role.GetWorkloadSpec(), scheme, c, readerBuilder.Build())
+				require.NoError(t, err)
+
+				_, err = rec.ConstructRoleStatus(ctx, cachedParent, &role)
+				require.NoError(t, err)
+				_, err = rec.CheckWorkloadReady(ctx, cachedParent, &role)
+				require.NoError(t, err)
+				assert.Zero(t, reads, "status and readiness checks must not read the live parent")
+
+				err = rec.Reconciler(ctx, cachedParent, &role, nil, expectedRevisionHash)
+				if tc.wantError == "" {
+					require.NoError(t, err)
+					assert.Positive(t, patches)
+				} else {
+					require.ErrorContains(t, err, tc.wantError)
+					assert.Zero(t, patches, "rejected adoption must not patch any resource")
+				}
+				if tc.liveState == "read failure" {
+					assert.ErrorIs(t, err, readFailure)
+				}
+				if tc.liveState == "missing" && tc.ownerUID == "" {
+					assert.True(t, apierrors.IsNotFound(err))
+				}
+				assert.Equal(t, tc.wantReads, reads)
+				got := wl.empty()
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(workload), got))
+				if tc.wantError != "" {
+					assert.Equal(t, before, got, "rejected adoption must leave the workload unchanged")
+				} else {
+					controller := metav1.GetControllerOf(got)
+					require.NotNil(t, controller)
+					assert.Equal(t, claimTestCurrentUID, controller.UID)
+				}
+			})
+		}
 	}
 }
 
@@ -485,7 +602,7 @@ func TestWorkloadReconcilers_ClaimTerminatingWorkloadTheyOwn(t *testing.T) {
 				Finalizers:        []string{"test.finalizer/rbg"},
 			}
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(wl.object(meta)).Build()
-			rec := wl.reconciler(scheme, c)
+			rec := wl.reconciler(scheme, c, c)
 
 			require.NoError(t, rec.Reconciler(ctx, rbg, &role, nil, expectedRevisionHash),
 				"a terminating workload the RBG owns must not abort the reconcile before cleanup")
@@ -511,8 +628,8 @@ func TestWorkloadReconcilers_AdoptEqualOrphan(t *testing.T) {
 			rbg.UID = claimTestCurrentUID
 
 			orphan := wl.equalOrphan(t, scheme, rbg, &role)
-			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(orphan).Build()
-			rec := wl.reconciler(scheme, c)
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rbg, orphan).Build()
+			rec := wl.reconciler(scheme, c, c)
 
 			require.NoError(t, rec.Reconciler(ctx, rbg, &role, nil, expectedRevisionHash))
 
@@ -546,7 +663,7 @@ func TestWorkloadReconcilers_ManageTheirOwnWorkload(t *testing.T) {
 				OwnerReferences: []metav1.OwnerReference{claimTestControllerRef(rbg, claimTestCurrentUID)},
 			})
 			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(owned).Build()
-			rec := wl.reconciler(scheme, c)
+			rec := wl.reconciler(scheme, c, c)
 
 			status, err := rec.ConstructRoleStatus(ctx, rbg, &role)
 			require.NoError(t, err)

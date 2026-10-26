@@ -47,15 +47,17 @@ import (
 type StatefulSetReconciler struct {
 	scheme        *runtime.Scheme
 	client        client.Client
+	apiReader     client.Reader
 	gangScheduler scheduler.GangScheduler
 }
 
 var _ WorkloadReconciler = &StatefulSetReconciler{}
 
-func NewStatefulSetReconciler(scheme *runtime.Scheme, client client.Client) *StatefulSetReconciler {
+func NewStatefulSetReconciler(scheme *runtime.Scheme, c client.Client, apiReader client.Reader) *StatefulSetReconciler {
 	return &StatefulSetReconciler{
-		scheme: scheme,
-		client: client,
+		scheme:    scheme,
+		client:    c,
+		apiReader: apiReader,
 	}
 }
 
@@ -106,6 +108,11 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 	if err == nil {
 		if err := checkWorkloadClaimable(oldSts, rbg); err != nil {
 			return err
+		}
+		if v1.GetControllerOfNoCopy(oldSts) == nil {
+			if err := utils.CanAdopt(ctx, r.apiReader, rbg); err != nil {
+				return err
+			}
 		}
 	}
 

@@ -131,10 +131,7 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 			tt.name, func(t *testing.T) {
 				client := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-				r := &StatefulSetReconciler{
-					scheme: scheme,
-					client: client,
-				}
+				r := NewStatefulSetReconciler(scheme, client, client)
 				err := r.Reconciler(context.Background(), tt.rbg, tt.role, nil, expectedRevisionHash)
 				if tt.expectErr {
 					assert.Error(t, err)
@@ -245,10 +242,8 @@ func TestStatefulSetReconciler_CheckWorkloadReady(t *testing.T) {
 					clientBuilder = clientBuilder.WithObjects(tt.sts)
 				}
 
-				r := &StatefulSetReconciler{
-					scheme: scheme,
-					client: clientBuilder.Build(),
-				}
+				client := clientBuilder.Build()
+				r := NewStatefulSetReconciler(scheme, client, client)
 
 				ready, err := r.CheckWorkloadReady(context.Background(), tt.rbg, tt.role)
 				if tt.expectErr {
@@ -354,10 +349,7 @@ func TestStatefulSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 					WithRuntimeObjects(tt.existingObjs...).
 					Build()
 
-				r := &StatefulSetReconciler{
-					scheme: scheme,
-					client: client,
-				}
+				r := NewStatefulSetReconciler(scheme, client, client)
 
 				err := r.CleanupOrphanedWorkloads(context.Background(), tt.rbg)
 				if tt.expectErr {
@@ -873,7 +865,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 				fakeClient := fake.NewClientBuilder().WithScheme(schema).WithRuntimeObjects(
 					rbg, tt.sts, oldRevision, newRevision, tt.podList,
 				).Build()
-				r := NewStatefulSetReconciler(schema, fakeClient)
+				r := NewStatefulSetReconciler(schema, fakeClient, fakeClient)
 
 				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))
 				retPartition, retReplicas, retErr := r.rollingUpdateParameters(
@@ -1143,7 +1135,7 @@ func TestConstructStatefulSetApplyConfiguration_LabelsAndAnnotations(t *testing.
 			_ = workloadsv1alpha2.AddToScheme(scheme)
 
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-			reconciler := NewStatefulSetReconciler(scheme, fakeClient)
+			reconciler := NewStatefulSetReconciler(scheme, fakeClient, fakeClient)
 
 			role.Labels = tt.roleLabels
 			role.Annotations = tt.roleAnnotations

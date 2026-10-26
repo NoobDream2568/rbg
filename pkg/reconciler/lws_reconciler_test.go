@@ -57,7 +57,7 @@ func TestLeaderWorkerSetReconciler_Reconciler(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	// Create reconciler
-	reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient)
+	reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient, fakeClient)
 
 	// Test successful reconciliation
 	ctx := context.Background()
@@ -108,7 +108,7 @@ func TestLeaderWorkerSetReconciler_ConstructRoleStatus(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lws).Build()
 
 	// Create reconciler
-	reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient)
+	reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient, fakeClient)
 
 	// Test status construction
 	ctx := context.Background()
@@ -196,7 +196,7 @@ func TestLeaderWorkerSetReconciler_CheckWorkloadReady(t *testing.T) {
 				fakeClient := builder.Build()
 
 				// Create reconciler
-				reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient)
+				reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient, fakeClient)
 
 				// Test ready check
 				ctx := context.Background()
@@ -335,7 +335,7 @@ func TestLeaderWorkerSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	// Create a fake client with initial objects
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
 		WithObjects(ownedLWS, orphanedLWS, unrelatedLWS, lwsCRD).Build()
-	reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient)
+	reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient, fakeClient)
 
 	// Test cleanup
 	ctx := log.IntoContext(context.Background(), zap.New().WithValues("env", "test"))
@@ -415,7 +415,7 @@ func TestConstructLWSApplyConfiguration_CoordinationRollingUpdate(t *testing.T) 
 	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient)
+	reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient, fakeClient)
 
 	role := &workloadsv1alpha2.RoleSpec{
 		Name:            "test-role",
@@ -569,7 +569,7 @@ func TestConstructLWSApplyConfiguration_LabelsAndAnnotations(t *testing.T) {
 			_ = workloadsv1alpha2.AddToScheme(scheme)
 
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-			reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient)
+			reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient, fakeClient)
 
 			role.Labels = tt.roleLabels
 			role.Annotations = tt.roleAnnotations

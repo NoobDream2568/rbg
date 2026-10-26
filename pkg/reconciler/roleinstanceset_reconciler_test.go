@@ -189,7 +189,7 @@ func TestRoleInstanceSetReconciler_LeaderWorkerPattern_WithTemplateRef(t *testin
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 			// Create reconciler
-			reconciler := NewRoleInstanceSetReconciler(scheme, fakeClient)
+			reconciler := NewRoleInstanceSetReconciler(scheme, fakeClient, fakeClient)
 
 			// Test reconciliation
 			ctx := context.Background()
@@ -258,7 +258,7 @@ func TestRoleInstanceSetReconciler_LeaderWorkerPattern_ComponentServiceName(t *t
 				Obj()
 
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-			reconciler := NewRoleInstanceSetReconciler(scheme, fakeClient)
+			reconciler := NewRoleInstanceSetReconciler(scheme, fakeClient, fakeClient)
 
 			ctx := context.Background()
 			assert.NoError(t, reconciler.Reconciler(ctx, rbg, &role, nil, expectedRevisionHash))
@@ -334,7 +334,7 @@ func TestRoleInstanceSetReconciler_LeaderWorkerPattern_TemplateIsolation(t *test
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	// Create reconciler
-	reconciler := NewRoleInstanceSetReconciler(scheme, fakeClient)
+	reconciler := NewRoleInstanceSetReconciler(scheme, fakeClient, fakeClient)
 
 	// Test reconciliation
 	ctx := context.Background()
@@ -375,7 +375,7 @@ func TestRoleInstanceSetReconciler_RoundsUpMaxUnavailableWhenMaxSurgeIsZero(t *t
 		WithRoles([]workloadsv1alpha2.RoleSpec{role}).
 		Obj()
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	reconciler := NewRoleInstanceSetReconciler(scheme, fakeClient)
+	reconciler := NewRoleInstanceSetReconciler(scheme, fakeClient, fakeClient)
 
 	ctx := context.Background()
 	err := reconciler.Reconciler(ctx, rbg, &role, nil, expectedRevisionHash)
@@ -433,7 +433,7 @@ func TestRoleInstanceSetReconciler_NormalizesLegacyUpdateStrategyType(t *testing
 				WithRoles([]workloadsv1alpha2.RoleSpec{role}).
 				Obj()
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-			reconciler := NewRoleInstanceSetReconciler(scheme, fakeClient)
+			reconciler := NewRoleInstanceSetReconciler(scheme, fakeClient, fakeClient)
 
 			ctx := context.Background()
 			err := reconciler.Reconciler(ctx, rbg, &role, nil, expectedRevisionHash)
@@ -665,7 +665,8 @@ func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
 				WithRoles([]workloadsv1alpha2.RoleSpec{role}).
 				Obj()
 
-			reconciler := NewRoleInstanceSetReconciler(scheme, fake.NewClientBuilder().WithScheme(scheme).Build())
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			reconciler := NewRoleInstanceSetReconciler(scheme, fakeClient, fakeClient)
 			applyConfig, err := reconciler.constructRoleInstanceSetApplyConfiguration(
 				context.Background(), rbg, &role, nil, expectedRevisionHash, nil,
 			)
@@ -791,7 +792,7 @@ func TestRoleInstanceSetReconciler_DerivesRoleInstanceGangAnnotation(t *testing.
 			fakeClient := builder.Build()
 
 			ctx := context.Background()
-			err := NewRoleInstanceSetReconciler(scheme, fakeClient).
+			err := NewRoleInstanceSetReconciler(scheme, fakeClient, fakeClient).
 				Reconciler(ctx, rbg, &role, nil, expectedRevisionHash)
 			assert.NoError(t, err)
 

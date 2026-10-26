@@ -146,10 +146,7 @@ func TestDeploymentReconciler_Reconciler(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
-				r := &DeploymentReconciler{
-					scheme: tt.client.Scheme(),
-					client: tt.client,
-				}
+				r := NewDeploymentReconciler(tt.client.Scheme(), tt.client, tt.client)
 
 				ctx := context.Background()
 				err := r.Reconciler(ctx, tt.rbg, tt.role, nil, expectedRevisionHash)
@@ -290,10 +287,7 @@ func TestDeploymentReconciler_CheckWorkloadReady(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
-				r := &DeploymentReconciler{
-					scheme: tt.client.Scheme(),
-					client: tt.client,
-				}
+				r := NewDeploymentReconciler(tt.client.Scheme(), tt.client, tt.client)
 
 				ctx := context.Background()
 				got, err := r.CheckWorkloadReady(ctx, tt.rbg, tt.role)
@@ -415,10 +409,7 @@ func TestDeploymentReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
-				r := &DeploymentReconciler{
-					scheme: tt.client.Scheme(),
-					client: tt.client,
-				}
+				r := NewDeploymentReconciler(tt.client.Scheme(), tt.client, tt.client)
 
 				ctx := context.Background()
 				err := r.CleanupOrphanedWorkloads(ctx, tt.rbg)
@@ -524,10 +515,7 @@ func TestDeploymentReconciler_constructDeployApplyConfiguration(t *testing.T) {
 		t.Run(
 			tt.name, func(t *testing.T) {
 				client := fake.NewClientBuilder().WithScheme(scheme).Build()
-				r := &DeploymentReconciler{
-					scheme: client.Scheme(),
-					client: client,
-				}
+				r := NewDeploymentReconciler(client.Scheme(), client, client)
 
 				ctx := context.Background()
 				_, err := r.constructDeployApplyConfiguration(ctx, tt.rbg, tt.role, tt.oldDeploy, nil, "revision-key")
@@ -680,7 +668,7 @@ func TestConstructDeploymentApplyConfiguration_LabelsAndAnnotations(t *testing.T
 			_ = workloadsv1alpha2.AddToScheme(scheme)
 
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-			reconciler := NewDeploymentReconciler(scheme, fakeClient)
+			reconciler := NewDeploymentReconciler(scheme, fakeClient, fakeClient)
 
 			role.Labels = tt.roleLabels
 			role.Annotations = tt.roleAnnotations

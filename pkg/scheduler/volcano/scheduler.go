@@ -240,6 +240,9 @@ func (m *GangScheduler) createOrUpdate(
 			}
 			// An orphaned PodGroup should be adopted
 			if !metav1.IsControlledBy(podGroup, rbg) {
+				if err := utils.CanAdopt(ctx, apiReader, rbg); err != nil {
+					return err
+				}
 				podGroup.OwnerReferences = append(podGroup.OwnerReferences, *metav1.NewControllerRef(rbg, utils.GetRbgGVK()))
 			}
 			podGroup.Spec.MinMember = desiredMinMember

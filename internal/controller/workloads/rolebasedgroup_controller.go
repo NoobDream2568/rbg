@@ -412,11 +412,14 @@ func (r *RoleBasedGroupReconciler) ensureDiscoveryConfigMode(
 		mode = constants.RefineDiscoveryConfigMode
 	}
 
-	old := rbg.DeepCopy()
-	rbg.SetDiscoveryConfigMode(mode)
-	if err := r.client.Patch(ctx, rbg, client.MergeFrom(old)); err != nil {
+	updated := rbg.DeepCopy()
+	updated.SetDiscoveryConfigMode(mode)
+	// Patch responses contain persisted replicas, not the in-memory autoscaling override.
+	if err := r.client.Patch(ctx, updated, client.MergeFrom(rbg)); err != nil {
 		return true, err
 	}
+	rbg.Annotations = updated.Annotations
+	rbg.ResourceVersion = updated.ResourceVersion
 
 	log.FromContext(ctx).Info("Initialized discovery config mode", "mode", mode)
 	// Don't requeue here - continue to reconcile ConfigMap and workloads in the same loop
@@ -519,7 +522,7 @@ func (r *RoleBasedGroupReconciler) reconcileRoles(
 	rollingUpdateStrategies map[string]workloadsv1alpha2.RollingUpdate,
 ) error {
 	// Process roles in dependency order
-	dependencyManager := dependency.NewDefaultDependencyManager(r.scheme, r.client)
+	dependencyManager := dependency.NewDefaultDependencyManager(r.scheme, r.client, r.apiReader)
 	sortedRoles, err := dependencyManager.SortRoles(ctx, rbg)
 	if err != nil {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidRoleDependency, err.Error())
@@ -671,7 +674,7 @@ func (r *RoleBasedGroupReconciler) getOrCreateWorkloadReconciler(
 	dynamicWatchCustomCRD(ctx, workloadSpec.Kind)
 
 	// Create new reconciler
-	rec, err := reconciler.NewWorkloadReconciler(workloadSpec, r.scheme, r.client)
+	rec, err := reconciler.NewWorkloadReconciler(workloadSpec, r.scheme, r.client, r.apiReader)
 	if err != nil {
 		return nil, err
 	}
@@ -735,23 +738,23 @@ func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *w
 	errs := make([]error, 0)
 
 	if r.enableDeprecatedWorkloadTypes {
-		deployRecon := reconciler.NewDeploymentReconciler(r.scheme, r.client)
+		deployRecon := reconciler.NewDeploymentReconciler(r.scheme, r.client, r.apiReader)
 		if err := deployRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
 			errs = append(errs, err)
 		}
 
-		stsRecon := reconciler.NewStatefulSetReconciler(r.scheme, r.client)
+		stsRecon := reconciler.NewStatefulSetReconciler(r.scheme, r.client, r.apiReader)
 		if err := stsRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
 			errs = append(errs, err)
 		}
 
-		lwsRecon := reconciler.NewLeaderWorkerSetReconciler(r.scheme, r.client)
+		lwsRecon := reconciler.NewLeaderWorkerSetReconciler(r.scheme, r.client, r.apiReader)
 		if err := lwsRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
 			errs = append(errs, err)
 		}
 	}
 
-	roleInstanceSetRecon := reconciler.NewRoleInstanceSetReconciler(r.scheme, r.client)
+	roleInstanceSetRecon := reconciler.NewRoleInstanceSetReconciler(r.scheme, r.client, r.apiReader)
 	if err := roleInstanceSetRecon.CleanupOrphanedWorkloads(ctx, rbg); err != nil {
 		errs = append(errs, err)
 	}
@@ -969,17 +972,16 @@ func (r *RoleBasedGroupReconciler) applyRBGSAReplicasOverride(
 		if !scale.IsScalingAdapterEnable(role) {
 			continue
 		}
-		adapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
 		adapterName := scale.GenerateScalingAdapterName(rbg.Name, role.Name)
-		if err := r.client.Get(ctx, types.NamespacedName{
-			Namespace: rbg.Namespace, Name: adapterName,
-		}, adapter); err != nil {
+		adapter, err := r.getScalingAdapter(ctx, rbg, role.Name)
+		if err != nil {
 			if apierrors.IsNotFound(err) {
 				continue
 			}
 			return fmt.Errorf("get scaling adapter %s/%s: %w", rbg.Namespace, adapterName, err)
 		}
-		if !adapter.ContainsRBGOwner(rbg) {
+		if !scale.ScalingAdapterTargetsRole(adapter, rbg, role.Name) ||
+			(!adapter.ContainsRBGOwner(rbg) && !scale.IsScalingAdapterAdoptable(adapter, rbg, role.Name)) {
 			continue
 		}
 		if adapter.Status.Phase != constants.AdapterPhaseBound {
@@ -1013,18 +1015,37 @@ func (r *RoleBasedGroupReconciler) applyRBGSAReplicasOverride(
 	return nil
 }
 
+func (r *RoleBasedGroupReconciler) getScalingAdapter(
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, roleName string,
+) (*workloadsv1alpha2.RoleBasedGroupScalingAdapter, error) {
+	adapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
+	key := client.ObjectKey{Name: scale.GenerateScalingAdapterName(rbg.Name, roleName), Namespace: rbg.Namespace}
+	if err := r.client.Get(ctx, key, adapter); err != nil {
+		return nil, err
+	}
+	// The adapter informer may still show the old owner after GC has orphaned the workloads.
+	if !adapter.ContainsRBGOwner(rbg) {
+		adapter = &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
+		if err := r.apiReader.Get(ctx, key, adapter); err != nil {
+			return nil, err
+		}
+	}
+	return adapter, nil
+}
+
 func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(
 	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, roleSpec *workloadsv1alpha2.RoleSpec,
 ) error {
 	logger := log.FromContext(ctx)
 	roleName := roleSpec.Name
 	roleScalingAdapterName := scale.GenerateScalingAdapterName(rbg.Name, roleName)
-	rbgScalingAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
-	err := r.client.Get(
-		ctx, types.NamespacedName{Name: roleScalingAdapterName, Namespace: rbg.Namespace}, rbgScalingAdapter,
-	)
+	rbgScalingAdapter, err := r.getScalingAdapter(ctx, rbg, roleName)
 	// scalingAdapter exists
 	if err == nil {
+		if !scale.ScalingAdapterTargetsRole(rbgScalingAdapter, rbg, roleName) {
+			return fmt.Errorf("scaling adapter %s/%s scaleTargetRef does not match RoleBasedGroup %s role %s",
+				rbg.Namespace, roleScalingAdapterName, rbg.Name, roleName)
+		}
 		// scalingAdapter is disabled, it must be deleted.
 		if !scale.IsScalingAdapterEnable(roleSpec) {
 			logger.Info("delete scalingAdapter", "scalingAdapter", rbgScalingAdapter.Name)
@@ -1040,12 +1061,21 @@ func (r *RoleBasedGroupReconciler) ReconcileScalingAdapter(
 			}
 			return nil
 		}
-		// The adapter is an orphan or a leftover of a previous same-named RBG.
-		// Replace it so it carries this RBG's owner reference and starts from a
-		// clean state instead of inheriting the predecessor's replicas.
-		// Use the observed UID as a delete precondition: if the cache is stale and
-		// a newer adapter already lives under this name, the API server will reject
-		// the delete and the reconcile will retry instead of wiping out the live object.
+		if scale.IsScalingAdapterAdoptable(rbgScalingAdapter, rbg, roleName) {
+			if err := utils.CanAdopt(ctx, r.apiReader, rbg); err != nil {
+				return err
+			}
+			rbgScalingAdapter.OwnerReferences = append(rbgScalingAdapter.OwnerReferences, metav1.OwnerReference{
+				APIVersion:         workloadsv1alpha2.GroupVersion.String(),
+				Kind:               "RoleBasedGroup",
+				Name:               rbg.Name,
+				UID:                rbg.UID,
+				BlockOwnerDeletion: ptr.To(true),
+			})
+			rbgScalingAdapter.Labels = buildScalingAdapterLabels(roleSpec, rbg.Name, roleName)
+			return r.client.Update(ctx, rbgScalingAdapter)
+		}
+		// A predecessor-owned adapter must not transfer its replicas to the new RBG.
 		logger.Info("recreating scalingAdapter not owned by this RBG", "scalingAdapter", rbgScalingAdapter.Name)
 		if err := r.client.Delete(ctx, rbgScalingAdapter, &client.DeleteOptions{
 			Preconditions: &metav1.Preconditions{

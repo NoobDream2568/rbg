@@ -43,13 +43,14 @@ import (
 type DeploymentReconciler struct {
 	scheme        *runtime.Scheme
 	client        client.Client
+	apiReader     client.Reader
 	gangScheduler scheduler.GangScheduler
 }
 
 var _ WorkloadReconciler = &DeploymentReconciler{}
 
-func NewDeploymentReconciler(scheme *runtime.Scheme, client client.Client) *DeploymentReconciler {
-	return &DeploymentReconciler{scheme: scheme, client: client}
+func NewDeploymentReconciler(scheme *runtime.Scheme, c client.Client, apiReader client.Reader) *DeploymentReconciler {
+	return &DeploymentReconciler{scheme: scheme, client: c, apiReader: apiReader}
 }
 
 // SetGangScheduler implements GangSchedulerSetter.
@@ -79,6 +80,11 @@ func (r *DeploymentReconciler) Reconciler(
 	if err == nil {
 		if err := checkWorkloadClaimable(oldDeploy, rbg); err != nil {
 			return err
+		}
+		if metav1.GetControllerOfNoCopy(oldDeploy) == nil {
+			if err := utils.CanAdopt(ctx, r.apiReader, rbg); err != nil {
+				return err
+			}
 		}
 	}
 

@@ -1148,7 +1148,8 @@ func TestRoleBasedGroupSetReconciler_Reconcile_OptimizedOrder(t *testing.T) {
 		client: fake.NewClientBuilder().WithScheme(scheme).
 			WithRuntimeObjects(existingRBGs...).
 			WithStatusSubresource(&workloadsv1alpha2.RoleBasedGroupSet{}).Build(),
-		scheme: scheme,
+		apiReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(initialRBGSet).Build(),
+		scheme:    scheme,
 	}
 
 	// Run reconcile
@@ -1363,7 +1364,8 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 					client: fake.NewClientBuilder().WithScheme(scheme).
 						WithRuntimeObjects(objs...).
 						WithStatusSubresource(&workloadsv1alpha2.RoleBasedGroupSet{}).Build(),
-					scheme: scheme,
+					apiReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(tt.initialRBGSet).Build(),
+					scheme:    scheme,
 				}
 
 				// Run the full reconcile loop. Since replicas in spec match the number of existing

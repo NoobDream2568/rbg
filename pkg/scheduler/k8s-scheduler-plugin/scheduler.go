@@ -111,7 +111,7 @@ func (m *GangScheduler) ReconcilePodGroup(
 		runtimeController.Owns(&schedv1alpha1.PodGroup{})
 	}
 
-	return m.createOrUpdate(ctx, rbg, gangStrategy)
+	return m.createOrUpdate(ctx, rbg, gangStrategy, apiReader)
 }
 
 // InjectPodSchedulingFields injects the kube PodGroup label into the pod template spec,
@@ -173,6 +173,7 @@ func (m *GangScheduler) createOrUpdate(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	gangStrategy *common.GangStrategy,
+	apiReader client.Reader,
 ) error {
 	logger := log.FromContext(ctx)
 	gvk := utils.GetRbgGVK()
@@ -232,6 +233,9 @@ func (m *GangScheduler) createOrUpdate(
 				return fmt.Errorf("PodGroup %s/%s is controlled by uid %s", rbg.Namespace, rbg.Name, ref.UID)
 			}
 			if !metav1.IsControlledBy(podGroup, rbg) {
+				if err := utils.CanAdopt(ctx, apiReader, rbg); err != nil {
+					return err
+				}
 				podGroup.OwnerReferences = append(podGroup.OwnerReferences, *metav1.NewControllerRef(rbg, gvk))
 			}
 			podGroup.Spec.MinMember = desiredMinMember

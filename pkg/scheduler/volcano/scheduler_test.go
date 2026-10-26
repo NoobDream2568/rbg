@@ -19,6 +19,7 @@ package volcano
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -271,8 +272,10 @@ func TestCreateOrUpdateSubGroupPolicyDrift(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, apiextensionsv1.AddToScheme(scheme))
 	require.NoError(t, volcanoschedulingv1beta1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
 
 	rbg := rbgWithRoles(standaloneRole("prefill", 4, ""), standaloneRole("decode", 6, ""))
+	rbg.UID = "rbg-uid"
 	before := &common.GangStrategy{
 		Roles:       sets.New("prefill", "decode"),
 		MinReplicas: map[string]int32{"prefill": 1, "decode": 2},
@@ -296,7 +299,7 @@ func TestCreateOrUpdateSubGroupPolicyDrift(t *testing.T) {
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(podGroupCRD(true), existing).Build()
+		WithObjects(podGroupCRD(true), existing, rbg).Build()
 
 	require.NoError(t, New(c).createOrUpdate(context.Background(), rbg, after, c))
 
@@ -461,6 +464,7 @@ func TestCreateOrUpdateForeignPodGroupRejected(t *testing.T) {
 func TestCreateOrUpdateOrphanPodGroupAdopted(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, volcanoschedulingv1beta1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
 
 	rbg := rbgWithRoles(standaloneRole("prefill", 2, ""))
 	rbg.UID = "new-rbg-uid"
@@ -470,9 +474,10 @@ func TestCreateOrUpdateOrphanPodGroupAdopted(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: rbg.Name, Namespace: rbg.Namespace},
 		Spec:       volcanoschedulingv1beta1.PodGroupSpec{MinMember: 1},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg, rbg).Build()
+	apiReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rbg).Build()
 
-	require.NoError(t, New(c).createOrUpdate(context.Background(), rbg, strategy, c))
+	require.NoError(t, New(c).createOrUpdate(context.Background(), rbg, strategy, apiReader))
 
 	after := &volcanoschedulingv1beta1.PodGroup{}
 	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pg), after))
@@ -485,27 +490,37 @@ func TestCreateOrUpdateOrphanPodGroupAdopted(t *testing.T) {
 func TestCreateOrUpdateSameSpecOrphanPodGroupAdopted(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, volcanoschedulingv1beta1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
 
 	rbg := rbgWithRoles(standaloneRole("prefill", 2, ""))
 	rbg.UID = "new-rbg-uid"
 	strategy := &common.GangStrategy{Roles: sets.New("prefill")}
 
+	otherRef := metav1.OwnerReference{APIVersion: "v1", Kind: "ConfigMap", Name: "other", UID: "other-uid"}
 	pg := &volcanoschedulingv1beta1.PodGroup{
-		ObjectMeta: metav1.ObjectMeta{Name: rbg.Name, Namespace: rbg.Namespace},
-		Spec:       volcanoschedulingv1beta1.PodGroupSpec{MinMember: 2},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            rbg.Name,
+			Namespace:       rbg.Namespace,
+			OwnerReferences: []metav1.OwnerReference{otherRef},
+		},
+		Spec: volcanoschedulingv1beta1.PodGroupSpec{MinMember: 2},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg, rbg).Build()
+	apiReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rbg).Build()
 
-	require.NoError(t, New(c).createOrUpdate(context.Background(), rbg, strategy, c))
+	require.NoError(t, New(c).createOrUpdate(context.Background(), rbg, strategy, apiReader))
 
 	after := &volcanoschedulingv1beta1.PodGroup{}
 	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pg), after))
 	assert.True(t, metav1.IsControlledBy(after, rbg), "same-spec orphan PodGroup should still be adopted")
+	assert.Contains(t, after.OwnerReferences, otherRef)
+	assert.Equal(t, pg.Spec, after.Spec)
 }
 
 func TestCreateOrUpdateOwnPodGroupUpdated(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, volcanoschedulingv1beta1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
 
 	rbg := rbgWithRoles(standaloneRole("prefill", 2, ""))
 	rbg.UID = "rbg-uid"
@@ -519,11 +534,74 @@ func TestCreateOrUpdateOwnPodGroupUpdated(t *testing.T) {
 		},
 		Spec: volcanoschedulingv1beta1.PodGroupSpec{MinMember: 1},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pg, rbg).Build()
+	reads := 0
+	apiReader := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			reads++
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	}).Build()
 
-	require.NoError(t, New(c).createOrUpdate(context.Background(), rbg, strategy, c))
+	for range 2 {
+		require.NoError(t, New(c).createOrUpdate(context.Background(), rbg, strategy, apiReader))
+	}
+	assert.Zero(t, reads, "owned PodGroups do not require a live parent read")
 
 	after := &volcanoschedulingv1beta1.PodGroup{}
 	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pg), after))
 	assert.Equal(t, int32(2), after.Spec.MinMember, "own PodGroup should be updated")
+}
+
+func TestReconcilePodGroupAdoptionRequiresLiveParent(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, volcanoschedulingv1beta1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+
+	for _, state := range []string{"missing", "terminating", "replaced UID"} {
+		for _, spec := range []struct {
+			name      string
+			minMember int32
+		}{{"same spec", 2}, {"different spec", 1}} {
+			t.Run(state+"/"+spec.name, func(t *testing.T) {
+				rbg := rbgWithRoles(standaloneRole("prefill", 2, ""))
+				rbg.UID = "rbg-uid"
+				pg := &volcanoschedulingv1beta1.PodGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: rbg.Name, Namespace: rbg.Namespace,
+						OwnerReferences: []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "other", UID: "other-uid"}},
+					},
+					Spec: volcanoschedulingv1beta1.PodGroupSpec{MinMember: spec.minMember},
+				}
+				c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rbg, pg).Build()
+				before := &volcanoschedulingv1beta1.PodGroup{}
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pg), before))
+
+				live := rbg.DeepCopy()
+				liveObjects := []client.Object{}
+				switch state {
+				case "terminating":
+					live.DeletionTimestamp = ptr.To(metav1.Now())
+					live.Finalizers = []string{"test/hold"}
+					liveObjects = append(liveObjects, live)
+				case "replaced UID":
+					live.UID = "replacement-uid"
+					liveObjects = append(liveObjects, live)
+				}
+				apiReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(liveObjects...).Build()
+				watched := &sync.Map{}
+				watched.Store(CrdName, struct{}{})
+				m := New(c)
+
+				require.Error(t, m.ReconcilePodGroup(ctx, rbg, &common.GangStrategy{}, nil, watched, apiReader))
+				after := &volcanoschedulingv1beta1.PodGroup{}
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pg), after))
+				assert.Equal(t, before, after, "rejected orphan must remain unchanged")
+				require.NoError(t, m.ReconcilePodGroup(ctx, rbg, nil, nil, watched, apiReader))
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pg), after))
+				assert.Equal(t, before, after, "rejected orphan must not be deleted when gang scheduling is disabled")
+			})
+		}
+	}
 }

@@ -43,6 +43,22 @@ const (
 
 type PatchType string
 
+// CanAdopt rechecks the live parent so stale cache entries cannot authorize orphan adoption.
+func CanAdopt(ctx context.Context, apiReader client.Reader, parent client.Object) error {
+	liveParent := parent.DeepCopyObject().(client.Object)
+	key := client.ObjectKeyFromObject(parent)
+	if err := apiReader.Get(ctx, key, liveParent); err != nil {
+		return fmt.Errorf("cannot adopt for %T %s: get live parent: %w", parent, key, err)
+	}
+	if liveParent.GetUID() != parent.GetUID() {
+		return fmt.Errorf("cannot adopt for %T %s: parent UID changed from %q to %q", parent, key, parent.GetUID(), liveParent.GetUID())
+	}
+	if parent.GetDeletionTimestamp() != nil || liveParent.GetDeletionTimestamp() != nil {
+		return fmt.Errorf("cannot adopt for %T %s: parent is deleting", parent, key)
+	}
+	return nil
+}
+
 // nolint:staticcheck
 // TODO:  SA1019: Use client.Client.Apply() instead
 func PatchObjectApplyConfiguration(
